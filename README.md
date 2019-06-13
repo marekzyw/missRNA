@@ -223,6 +223,20 @@ Fasta output file is optional (when *-ec* or *-r* option is used) and contains i
 
 Sample fasta output file *sample_result.fasta* is provided in "sample" folder.
 
+#### Commandline output
+
+Additionally after the analysis missRNA will print basic statistics consisting of:
+1. Number of all reads in analysis
+2. Nuber of reads within identified stable RNAs
+3. Percent of reads within identified stable RNAs
+
+Example:
+
+    Number of all reads in analysis:  3992029
+    Number of reads within identified stable RNAs:  3712635
+    Percent of reads within identified stable RNAs:  93.0%
+
+
 #### Command used to generate sample output files
 
 ```../missRNA -i 10.collapsed.bam -o sample_result -r Homo_sapiens.GRCh38.transcriptome.primary_assembly.fa -c```
