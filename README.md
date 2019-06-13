@@ -115,10 +115,15 @@ To show full list of available  options type:
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Number of threads. Default: 1
 
 ### Input
+#### Main input - required
 
 missRNA requires input file in BAM, SAM or 6-column BED format.
 
-Sample input file is provided in "sample" folder. *10.collapsed.bam* consists of WHAT?? 
+Sample input file is provided in "sample" folder. *sample.bam* consists of 11742 Glu tRNA reads.
+
+#### Reference file
+
+For the calculation of product sequence, missRNA requires additional reference file in FASTA format. Sample reference file is provided in "sample" folder. *reference.fa* contains reference sequences for Glu tRNAs.
 
 ### Output file
 
@@ -128,15 +133,17 @@ missRNA generates 4-5 output files, depending on used options.
 
 Main output file contains informations about processing products found, using a following format:
 
-    ENST00000408189	ENST00000408189_1_75_+	.	1	75	+	3438	5047	6064	48.13	70.66	84.89	83.23	TTGCAGTGATGACTTGCGAATCAAATCTGTCAATCCCCTGAGTGCAATCACTGATGTCTCCATGTCTCTGAGCAA
-    ENST00000408189	ENST00000408189_33_75_+	.	33	75	+	579	884	985	8.11	12.38	13.79	89.75	ATCCCCTGAGTGCAATCACTGATGTCTCCATGTCTCTGAGCAA
-    ENST00000362645	ENST00000362645_1_23_+	.	1	23	+	13	15	15	40.62	46.88	46.88	100.0	GGCTGGTCCGATGGTAGTGGGTT
+    rna_tRNA_Glu_TTC_5	rna_tRNA_Glu_TTC_5_1_33_+	.	1	33	+798	1003	1384	44.38	55.78	76.97	72.47	TCCCACATGGTCTAGCGGTTAGGATTCCTGGTT
+    rna_tRNA_Glu_TTC_5	rna_tRNA_Glu_TTC_5_1_53_+	.	1	53	+68	390	1335	3.78	21.69	74.25	29.21	TCCCACATGGTCTAGCGGTTAGGATTCCTGGTTTTCACCCAGGCGGCCCGGGT
+    rna_tRNA_Glu_TTC_5	rna_tRNA_Glu_TTC_5_1_28_+	.	1	28	+17	71.74	74	0.95	3.99	4.12	100.0	TCCCACATGGTCTAGCGGTTAGGATTCC
+    rna_tRNA_Glu_TTC_5	rna_tRNA_Glu_TTC_5_1_26_+	.	1	26	+14	67.26	509	0.78	3.74	28.31	13.75	TCCCACATGGTCTAGCGGTTAGGATT
+
 
 Sample main output file *sample_result* is provided in "sample" folder.
 
 The file structure is as follows (coordinates are in 1-based format):
-1. transcript name, e.g. *ENST00000408189*
-2. product name (transcript name_start_stop_strand), e.g. *ENST00000408189_1_75_+*
+1. transcript name, e.g. *rna_tRNA_Glu_TTC_5*
+2. product name (transcript name_start_stop_strand), e.g. *rna_tRNA_Glu_TTC_5_1_33_+*
 3. chromosome name ".", available with future genomic option
 4. product start position
 5. product stop position
@@ -154,10 +161,10 @@ The file structure is as follows (coordinates are in 1-based format):
 
 Rlist output file contains list of read names which are the part of the product, using a following format:
 
-    ENST00000362645_1_23_+ -> 35291-4 44461-3 48000-3 75634-2 162313-1 352060-1 336201-1
-    ENST00000362645_1_18_+ -> 29338-6 72436-2 84733-2 219240-1
-    ENST00000362886_81_107_+ -> 6674-37 9798-22 9799-22 67798-2 247594-1 278992-1 53829-3 76496-2 17726-10 46338-3 52015-3 76047-2 396832-1 25532-7
-    ENST00000362196_18_40_+ -> 7733-30 41994-4 59649-2 89923-2 245111-1 137390-1 329198-1 56013-3 65994-2
+    rna_tRNA_Glu_TTC_5_1_33_+ -> 396726-1 399886-1 404030-1 407067-1 412412-1 416574-1 806-561 5395-48 6156-41 7815-30 15718-12 17439-11 17731-10 17847-10 18760-10 20261-9 39240-4 44115-3 58145-3 69585-2 71854-2 87996-2 89280-2 92576-2 173598-1 179067-1 185192-1 205785-1 220197-1 238630-1 239949-1 249761-1 266332-1 271182-1 285850-1 294812-1 296235-1 296371-1 309225-1 315538-1 318154-1 324274-1 324358-1 348575-1 349064-1 353219-1 356012-1 358214-1 369915-1 372909-1 374884-1 375261-1 378015-1 385435-1 2725-118 16557-11 21754-8 33506-5 50793-3 52665-3 80253-2 82142-2 109255-1 150698-1 212422-1 223807-1 244728-1 248222-1 249581-1 271856-1 281389-1 286699-1 332880-1 349284-1 349520-1 379967-1 390888-1 419741-1 11790-18 56180-3 70272-2 174053-1 175281-1 360168-1 380579-1 265161-1 296272-1 299539-1 30788-5 117621-1 260233-1
+    rna_tRNA_Glu_TTC_5_1_53_+ -> 430317-1 5248-50 44483-3 53019-3 132312-1 133217-1 141461-1 142529-1 171559-1 223526-1 236957-1 246253-1 275767-1 310556-1 357519-1 329745-1 358639-1 388813-1 142441-1 229236-1 308190-1
+    rna_tRNA_Glu_TTC_5_1_28_+ -> 13510-15 189046-1 233527-1 31244-5 18452-10 64859-2 74264-2 136213-1 378844-1 381562-1
+    rna_tRNA_Glu_TTC_5_1_26_+ -> 18756-10 223568-1 253964-1 294850-1 351832-1 39415-4 51759-3 61041-2 94148-2 31244-5
 
 Sample rlist output file *sample_result.rlist* is provided in "sample" folder.
 
@@ -170,11 +177,10 @@ The file structure is as follows (coordinates are in 1-based format and match th
 
 Precursors output file contains informations about products precursors transcripts, using a following format:
 
-    ENST00000408189	.	.	.	+	2	6075	4017 66.12
-    ENST00000362645	.	.	.	+	2	26	24	92.31
-    ENST00000362886	.	.	.	+	1	116	85	73.28
-    ENST00000362196	.	.	.	+	3	105.0	61	58.1
-
+    rna_tRNA_Glu_TTC_5	.	.	.	+	4	1738.0	897	51.61
+    rna_tRNA_Glu_CTC_2	.	.	.	+	11	7503	3412	45.48
+    rna_tRNA_Glu_CTC_1	.	.	.	+	12	7603	3494	45.96
+    rna_tRNA_Glu_CTC_7	.	.	.	+	12	7603	3494	45.96
 
 Sample precursors output file *sample_result.precursors* is provided in "sample" folder.
 
@@ -193,10 +199,10 @@ The file structure is as follows:
 
 BED output file contains informations about products in BED file, using a following format:
 
-    ENST00000408189	0	75	ENST00000408189_1_75_+	5047	+
-    ENST00000408189	32	75	ENST00000408189_33_75_+	884	+
-    ENST00000362645	0	23	ENST00000362645_1_23_+	15	+
-    ENST00000362645	0	18	ENST00000362645_1_18_+	11	+
+    rna_tRNA_Glu_TTC_5	0	33	rna_tRNA_Glu_TTC_5_1_33_+	1003	+
+    rna_tRNA_Glu_TTC_5	0	53	rna_tRNA_Glu_TTC_5_1_53_+	390	+
+    rna_tRNA_Glu_TTC_5	0	28	rna_tRNA_Glu_TTC_5_1_28_+	72.0	+
+    rna_tRNA_Glu_TTC_5	0	26	rna_tRNA_Glu_TTC_5_1_26_+	67.0	+
 
 Sample BED output file *sample_result.bed* is provided in "sample" folder.
 
@@ -204,7 +210,7 @@ The file structure is as follows (coordinates are in 0-based format, product coo
 1. transcript name
 2. product start
 3. product stop
-4. product name from main output file (transcript name_start_stop_strand), e.g. *ENST00000362645_1_23_+*
+4. product name from main output file (transcript name_start_stop_strand), e.g. *rna_tRNA_Glu_TTC_5_1_33_+*
 5. number of reads within the product
 6. strand sign
 
@@ -212,14 +218,14 @@ The file structure is as follows (coordinates are in 0-based format, product coo
 
 Fasta output file is optional (when *-ec* or *-r* option is used) and contains informations about produkt sequence, either consensus or parsed from reference, using a following format:
 
-    >ENST00000408189_1_75_+
-    TTGCAGTGATGACTTGCGAATCAAATCTGTCAATCCCCTGAGTGCAATCACTGATGTCTCCATGTCTCTGAGCAA
-    >ENST00000408189_33_75_+
-    ATCCCCTGAGTGCAATCACTGATGTCTCCATGTCTCTGAGCAA
-    >ENST00000362645_1_23_+
-    GGCTGGTCCGATGGTAGTGGGTT
-    >ENST00000362645_1_18_+
-    GGCTGGTCCGATGGTAGT
+    >rna_tRNA_Glu_TTC_5_1_33_+
+    TCCCACATGGTCTAGCGGTTAGGATTCCTGGTT
+    >rna_tRNA_Glu_TTC_5_1_53_+
+    TCCCACATGGTCTAGCGGTTAGGATTCCTGGTTTTCACCCAGGCGGCCCGGGT
+    >rna_tRNA_Glu_TTC_5_1_28_+
+    TCCCACATGGTCTAGCGGTTAGGATTCC
+    >rna_tRNA_Glu_TTC_5_1_26_+
+    TCCCACATGGTCTAGCGGTTAGGATT
 
 Sample fasta output file *sample_result.fasta* is provided in "sample" folder.
 
@@ -232,14 +238,14 @@ Additionally after the analysis missRNA will print basic statistics consisting o
 
 Example:
 
-    Number of all reads in analysis:  3992029
-    Number of reads within identified stable RNAs:  3712635
-    Percent of reads within identified stable RNAs:  93.0%
+    Number of all reads in analysis:  11742
+    Number of reads within identified stable RNAs:  9653
+    Percent of reads within identified stable RNAs:  82.21%
 
 
 #### Command used to generate sample output files
 
-```../missRNA -i 10.collapsed.bam -o sample_result -r Homo_sapiens.GRCh38.transcriptome.primary_assembly.fa -c```
+```../missRNA -i sample.bam -o sample_result -r Homo_sapiens.GRCh38.transcriptome.primary_assembly.fa -c```
 
 
 ### Contribute
