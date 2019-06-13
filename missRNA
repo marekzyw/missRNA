@@ -1,0 +1,785 @@
+#!/usr/bin/python3
+import sys
+import random
+import string
+import os
+import time
+import threading
+import subprocess
+from multiprocessing import Lock
+
+L = Lock()
+
+try:
+    import argparse
+except ImportError:
+    sys.stderr.write("ERROR: Module argparse is currently not installed.\n")
+    sys.exit()
+
+try:
+    import pysam
+except ImportError:
+    sys.stderr.write("ERROR: Module pysam is currently not installed.\n")
+    sys.exit()
+
+
+def check_local_maximum(product, positions):
+    for i in product[1:]:
+        if i[0] > product[0][0]:
+            for j in product[1:]:
+                positions[(j[1], j[2])][2] = 0
+                positions[(j[1], j[2])] = positions[(j[1], j[2])][:3]
+            product.clear()
+            break
+    return product, positions
+
+
+def parse_reads_positions(transcript, reads_count):
+    positions = {}
+    peaks = {}
+    for r in transcript:
+        reads_count += r[3]
+        if (r[0], r[1]) not in positions:
+            positions[(r[0], r[1])] = [[r[2]], r[3], 0]
+            peaks[(r[0], r[1])] = r[3]
+        else:
+            positions[(r[0], r[1])][0].append(r[2])
+            positions[(r[0], r[1])][1] += r[3]
+            peaks[(r[0], r[1])] += r[3]
+    return positions, peaks, reads_count
+
+
+def remove_products_with_low_enrichment(remove, products, positions):
+    for e, tr in enumerate(sorted(remove)):
+        del products[tr - e]
+        for key in positions:
+            for xx, ind in enumerate(positions[key][3:]):
+                if ind > tr - e:
+                    positions[key][3 + xx] -= 1
+    return products, positions
+
+
+class MissRNA:
+    def __init__(self, main_output, list_output, bed_output, precursors_output, fasta, swind, bwind, min_reads, enrch,
+                 off, fo, rand, cons, weight, from_ref, f_out):
+        self.main_handler = main_output
+        self.list_handler = list_output
+        self.bed_handler = bed_output
+        self.precursors_handler = precursors_output
+        self.fasta_handler = f_out
+        self.random_string = rand
+        self.reference = fasta
+        self.small_window = swind
+        self.big_window = bwind
+        self.minimum = min_reads
+        self.enrichment = enrch
+        self.offset = off
+        self.forbid_overlapping = fo
+        self.consensus = cons
+        self.distance_weight = weight
+        self.export_file = []
+        self.bam_dictionary = {}
+        self.all_reads_from_processing = 0
+        self.parsed_reads_list = {}
+        self.nonredundand = 0
+        self.nonredundant_list = {}
+        self.from_bam = from_ref
+        self.reference_dict = {}
+
+    def collapse_bam_transcripts(self, input_file, sign, bam_flag):
+        spliced_alignments = 0
+        clipping = False
+        bed = {}
+        reads_dict = {}
+        count_in_file = {}
+        for read in input_file.fetch(until_eof=True):
+            if not read.is_unmapped:
+                if "S" in read.cigarstring or "H" in read.cigarstring:
+                    clipping = True
+                if "N" in read.cigarstring:
+                    spliced_alignments += 1
+                else:
+                    if read.is_reverse:
+                        strand = "-"
+                        seq = read.get_forward_sequence()
+                    else:
+                        strand = "+"
+                        seq = read.seq
+                    if strand in sign:
+                        if read.qname in count_in_file:
+                            count_in_file[read.qname].append(read)
+                        if seq in reads_dict:
+                            reads_dict[seq].append(read.qname)
+                        else:
+                            reads_dict[seq] = [read.qname]
+                            count_in_file[read.qname] = [read]
+
+        if clipping:
+            sys.stderr.write("_WARNING! _\nRead clipping has been found in mapping data. Read alignment using local \
+                    (not end-to-end) mode, makes impossible to estimate real ends of small RNAs and interfere with \
+                    assumptions of our method. Keep this in mind, when interpreting your results.\n")
+        if spliced_alignments > 0:
+            sys.stderr.write("_WARNING! _\n'N' symbol found in CIGAR string of your BAM file. Currently we do not \
+                    support spliced alignments. " + str(spliced_alignments) + " spliced alignments has been excluded \
+                    from analysis.\n")
+
+        r_cnt = 0
+        for i in count_in_file:
+            for j in count_in_file[i]:
+                j.qname = str(r_cnt) + "-" + str(len(list(set(reads_dict[j.get_forward_sequence()]))))
+                if j.is_reverse:
+                    strand = "-"
+                else:
+                    strand = "+"
+                if j.qname not in self.nonredundant_list:
+                    self.nonredundand += len(list(set(reads_dict[j.get_forward_sequence()])))
+                    self.nonredundant_list[j.qname] = len(list(set(reads_dict[j.get_forward_sequence()])))
+                if (j.reference_name, strand) in bed:
+                    bed[(j.reference_name, strand)].append([j.reference_start, j.reference_start + j.reference_length,
+                                                            j.qname,
+                                                            len(list(set(reads_dict[j.get_forward_sequence()])))])
+                else:
+                    bed[(j.reference_name, strand)] = [[j.reference_start, j.reference_start + j.reference_length,
+                                                        j.qname, len(list(set(reads_dict[j.get_forward_sequence()])))]]
+
+                if bam_flag and self.from_bam:
+                    if (j.qname, j.reference_name, strand) in self.bam_dictionary:
+                        self.bam_dictionary[(j.qname, j.reference_name, strand)].append(
+                            [j] * len(list(set(reads_dict[j.get_forward_sequence()]))))
+                    else:
+                        self.bam_dictionary[(j.qname, j.reference_name, strand)] = []
+                        self.bam_dictionary[(j.qname, j.reference_name, strand)].append(
+                            [j] * len(list(set(reads_dict[j.get_forward_sequence()]))))
+            r_cnt += 1
+        del self.nonredundant_list
+
+        if not self.from_bam and self.reference != "":
+            self.read_reference()
+        return bed
+
+    def parse_sam_bam_transcripts(self, input_file, sign, bam_flag):
+        spliced_alignments = 0
+        clipping = False
+        bed = {}
+        for read in input_file.fetch(until_eof=True):
+            if not read.is_unmapped:
+                if '_x' in read.qname:
+                    read_count = int(read.qname.split("_x")[1])
+                elif "-" in read.qname:
+                    read_count = int(read.qname.split("-")[1])
+                else:
+                    sys.stderr.write("ERROR: Input file is uncollapsed.\n")
+                    sys.exit()
+                if "S" in read.cigarstring or "H" in read.cigarstring:
+                    clipping = True
+                if 'N' in read.cigarstring:
+                    spliced_alignments += read.count
+                else:
+                    if read.is_reverse:
+                        strand = "-"
+                    else:
+                        strand = "+"
+                    if strand in sign:
+                        if '_x' in read.qname:
+                            val = int(read.qname.split("_x")[1])
+                        elif "-" in read.qname:
+                            val = int(read.qname.split("-")[1])
+                        else:
+                            sys.stderr.write("ERROR: Input file is uncollapsed.\n")
+                            sys.exit()
+
+                        if read.qname not in self.nonredundant_list:
+                            self.nonredundand += val
+                            self.nonredundant_list[read.qname] = val
+
+                        if (read.reference_name, strand) in bed:
+                            bed[(read.reference_name, strand)].append([read.reference_start,
+                                                                       read.reference_start + read.reference_length,
+                                                                       read.qname, val])
+                        else:
+                            bed[(read.reference_name, strand)] = [[read.reference_start,
+                                                                   read.reference_start + read.reference_length,
+                                                                   read.qname, val]]
+
+                        if bam_flag and self.from_bam:
+                            if (read.qname, read.reference_name, strand) in self.bam_dictionary:
+                                self.bam_dictionary[(read.qname, read.reference_name, strand)].append(
+                                    [read] * read_count)
+                            else:
+                                self.bam_dictionary[(read.qname, read.reference_name, strand)] = []
+                                self.bam_dictionary[(read.qname, read.reference_name, strand)].append(
+                                    [read] * read_count)
+
+        if clipping:
+            sys.stderr.write("_WARNING! _\nRead clipping has been found in mapping data. Read alignment using local \
+            (not end-to-end) mode, makes impossible to estimate real ends of small RNAs and interfere with assumptions \
+            of our method. Keep this in mind, when interpreting your results.\n")
+        if spliced_alignments > 0:
+            sys.stderr.write("_WARNING! _\n'N' symbol found in CIGAR string of your BAM file. Currently we do not \
+            support spliced alignments. " + str(spliced_alignments) + " spliced alignments has been excluded from \
+            analysis.\n")
+        del self.nonredundant_list
+
+        if not self.from_bam and self.reference != "":
+            self.read_reference()
+        # print(self.reference_dict)
+        # exit()
+        return bed
+
+    def parse_bed_transcriptom_uncollapsed(self, bed_file, sign):
+        bed_dict = {}
+        try:
+            with open(bed_file) as bed:
+                for i in bed:
+                    line = i.strip().split("\t")
+                    ref_name = line[0]
+                    start_read = line[1]
+                    stop_read = line[2]
+                    read_qname = line[3]
+                    strand = line[5]
+                    if read_qname not in self.nonredundant_list:
+                        self.nonredundand += 1
+                        self.nonredundant_list[read_qname] = 1
+                    if "-" in read_qname:
+                        sys.stderr.write("ERROR: Input file is collapsed.\n")
+                        sys.exit()
+                    if strand in sign:
+                        if (ref_name, strand) in bed_dict:
+                            bed_dict[(ref_name, strand)].append([int(start_read), int(stop_read), read_qname, 1])
+                        else:
+                            bed_dict[(ref_name, strand)] = [[int(start_read), int(stop_read), read_qname, 1]]
+
+        except FileNotFoundError:
+            sys.stderr.write("ERROR: could not open alignment file `data/test_seqq.bam`: No such file or directory.\n")
+            sys.exit()
+        del self.nonredundant_list
+
+        if not self.from_bam and self.reference != "":
+            self.read_reference()
+        return bed_dict
+
+    def parse_bed_transcriptom_collapsed(self, bed_file, sign):
+        bed_dict = {}
+        try:
+            with open(bed_file) as bed:
+                for i in bed:
+                    line = i.strip().split("\t")
+                    ref_name = line[0]
+                    start_read = line[1]
+                    stop_read = line[2]
+                    read_qname = line[3]
+                    strand = line[5]
+                    if '_x' in line[3]:
+                        val = int(line[3].split("_x")[1])
+                    elif "-" in line[3]:
+                        val = int(line[3].split("-")[1])
+                    else:
+                        sys.stderr.write("ERROR: Input file is uncollapsed.\n")
+                        sys.exit()
+                    if read_qname not in self.nonredundant_list:
+                        self.nonredundand += val
+                        self.nonredundant_list[read_qname] = val
+                    if strand in sign:
+                        if (ref_name, strand) in bed_dict:
+                            bed_dict[(ref_name, strand)].append([int(start_read), int(stop_read), read_qname, val])
+                        else:
+                            bed_dict[(ref_name, strand)] = [[int(start_read), int(stop_read), read_qname, val]]
+        except FileNotFoundError:
+            sys.stderr.write("ERROR: could not open alignment file `data/test_seqq.bam`: No such file or directory.\n")
+            sys.exit()
+        del self.nonredundant_list
+        if not self.from_bam and self.reference != "":
+            self.read_reference()
+        return bed_dict
+
+    def read_reference(self):
+        id_ref = ""
+        with open(self.reference) as ref:
+            for r in ref:
+                if r.startswith(">"):
+                    id_ref = r.strip().split(" ")[0][1:]
+                    self.reference_dict[id_ref] = ""
+                else:
+                    self.reference_dict[id_ref] += r.strip()
+
+    def define_windows_reads(self, product, positions, index):
+        # === set big window coordinates
+        a_min = 0 if (product[0][1] - self.big_window < 0) else product[0][1] - self.big_window
+        b_min = 0 if (product[0][2] - self.big_window < 0) else product[0][2] - self.big_window
+        swv = 0
+        bwv = 0
+        for i in range(a_min, product[0][1] + self.big_window + 1):
+            for j in range(b_min, product[0][2] + self.big_window + 1):
+                if i != product[0][1] or j != product[0][2]:
+                    if (i, j) in positions:
+                        a_small = abs(i - product[0][1])
+                        b_small = abs(j - product[0][2])
+                        bwv += positions[(i, j)][1]
+
+                        if a_small < self.small_window + 1 and b_small < self.small_window + 1:
+                            swv += positions[(i, j)][1]
+                            positions[(i, j)][2] += 1
+                            positions[(i, j)].append(index)
+                            product.append([positions[(i, j)][1], i, j, positions[(i, j)][0]])
+        return product, swv, bwv
+
+    def define_windows_without_overlapping(self, product, swv, bwv):
+        for a, p in enumerate(product):
+            delete = []
+            for y in range(a + 1, len(product)):
+                diff_a = abs(p[0][1] - product[y][0][1])
+                diff_b = abs(p[0][2] - product[y][0][2])
+                if diff_a <= self.small_window * 2 and diff_b <= self.small_window * 2:
+                    delete.append(y)
+            for y, d in enumerate(sorted(delete)):
+                del product[d - y]
+                del swv[d - y]
+                del bwv[d - y]
+        return product, swv, bwv
+
+    def filter_products_by_enrichment(self, all_products, swv, bwv, positions):
+        enrichment_list = []
+        for_remove = []
+        for b, a in enumerate(all_products):
+            enrichment = round((swv[b] * 100.0) / bwv[b], 4)
+            if enrichment < self.enrichment:
+                for key in positions:
+                    for xx, ind in enumerate(positions[key][3:]):
+                        if ind == b:
+                            temp_list = positions[key][3:]
+                            temp_list.remove(ind)
+                            positions[key] = positions[key][:3]
+                            positions[key].extend(temp_list)
+                            positions[key][2] -= 1
+                            break
+                for_remove.append(b)
+            enrichment_list.append(enrichment)
+        products, positions = remove_products_with_low_enrichment(for_remove, all_products, positions)
+        return products, positions, enrichment_list
+
+    def reevaluation(self, positions, products, swv):
+        for key, val in positions.items():
+            if val[2] > 1:
+                parts = []
+                peaks = [products[p][0][0] for p in positions[key][3:]]
+                distances = [abs(products[p][0][1] - key[0]) + abs(products[p][0][2] - key[1]) for p in
+                             positions[key][3:]]
+                distance_factors = [self.distance_weight * (1 - (dist / sum(distances))) for dist in distances]
+                dist_peak_factors = [peaks[d] * dist for d, dist in enumerate(distance_factors)]
+                final_percentage = [(dist * 100) / sum(dist_peak_factors) for dist in dist_peak_factors]
+                for i, o in enumerate(positions[key][3:]):
+                    for p in products[o]:
+                        if p[1] == key[0] and p[2] == key[1]:
+                            p[0] = (positions[key][1] * float(final_percentage[i])) / 100
+                            parts.append((positions[key][1] * float(final_percentage[i])) / 100)
+                            difference = positions[key][1] - (positions[key][1] * float(final_percentage[i])) / 100
+                            swv[o] -= difference
+                            break
+        return positions, products, swv
+
+    def set_offset_coordinates(self, prec, prod, bed):
+        if self.offset < prec[0]:
+            prec[0] = prec[0] - self.offset
+        else:
+            prec[0] = prec[0] - self.offset - 1
+        if self.offset < prod[0]:
+            prod[0] = prod[0] - self.offset
+        else:
+            prod[0] = prod[0] - self.offset - 1
+        if self.offset < bed[0]:
+            bed[0] = bed[0] - self.offset
+        else:
+            bed[0] = bed[0] - self.offset
+        if self.offset < prec[1]:
+            prec[1] = prec[1] - self.offset
+        else:
+            prec[1] = prec[1] - self.offset - 1
+        if self.offset < prod[1]:
+            prod[1] = prod[1] - self.offset
+        else:
+            prod[1] = prod[1] - self.offset - 1
+        if self.offset < bed[1]:
+            bed[1] = bed[1] - self.offset
+        else:
+            bed[1] = bed[1] - self.offset
+        return prec, prod, bed
+
+    def create_consensus(self, product, name, strand):
+        rand = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(10))
+        bam = pysam.AlignmentFile(self.consensus, "rb")
+        temp_name = "temp_" + str(product[0][0]) + "_bam_" + rand + ".bam"
+        # print(temp_name)
+        pairedreads = pysam.AlignmentFile(temp_name, "wb", template=bam)
+        new_name = 0
+        # for part in sorted(product, key=lambda x: (x[1], x[2])):
+        #    for p in part[3]:
+        for p in product[0][3]:
+            if len(self.bam_dictionary[(p, name, strand)]) > 1:
+                for e, b in enumerate(self.bam_dictionary[(p, name, strand)]):
+                    if abs(product[0][1] - b[0].reference_start) <= self.small_window:
+                        for read in b:
+                            read.qname = str(new_name)
+                            new_name += 1
+                            if strand == "+":
+                                read.flag = 0
+                            elif strand == "-":
+                                read.flag = 16
+                            pairedreads.write(read)
+            else:
+                for e, b in enumerate(self.bam_dictionary[(p, name, strand)][0]):
+                    b.qname = str(new_name)
+                    new_name += 1
+                    if strand == "+":
+                        b.flag = 0
+                    elif strand == "-":
+                        b.flag = 16
+                    pairedreads.write(b)
+
+        pairedreads.close()
+        bam.close()
+        return self.get_consensus(temp_name)
+
+    def get_consensus(self, name):
+        cmd = "samtools mpileup -uf " + self.reference + " " + name + " | bcftools view -cg - | " + \
+              "/usr/share/samtools/vcfutils.pl vcf2fq"
+        result = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL)
+        seq = "".join(result.decode().split('+')[0].split()[1:]).replace('n', '')
+        os.remove(name)
+        return seq
+
+    def transcriptomic_data(self, region, tr_name, tr_str):
+        transcript_name = tr_name
+        transcript_strand = tr_str
+        all_reads = 0
+
+        positions, peaks, all_reads = parse_reads_positions(region, all_reads)
+
+        del region
+
+        sorted_peaks = sorted(peaks.items(), key=lambda p: (p[1]))
+        del peaks
+
+        all_results = []
+        small_window_values_list = []
+        big_window_values_list = []
+
+        index = 0
+        while len(sorted_peaks) > 0 and sorted_peaks[-1][1] >= self.minimum:
+            # ==== solution = [val, start, stop, [reads]]
+            solution = [[sorted_peaks[-1][1], sorted_peaks[-1][0][0], sorted_peaks[-1][0][1],
+                         positions[(sorted_peaks[-1][0][0], sorted_peaks[-1][0][1])][0]]]
+
+            del sorted_peaks[-1]
+            small_window_values = solution[0][0]
+            big_window_values = solution[0][0]
+
+            # ==== walk through big window, update expression values
+            solution, small, big = self.define_windows_reads(solution, positions, index)
+            big_window_values += big
+            small_window_values += small
+
+            # ==== check if our point is a local maximum
+            solution, positions = check_local_maximum(solution, positions)
+
+            # ==== add product to all_results
+            if len(solution) > 0:
+                all_results.append(solution)
+                small_window_values_list.append(small_window_values)
+                big_window_values_list.append(big_window_values)
+                index += 1
+
+        # ==== filter overlapped results
+        if self.forbid_overlapping:
+            all_results, small_window_values_list, big_window_values_list = self.define_windows_without_overlapping(
+                all_results, small_window_values_list, big_window_values_list)
+
+        # ==== filter entichment & remove false products
+        all_results, positions, enrich_list = self.filter_products_by_enrichment(all_results, small_window_values_list,
+                                                                                 big_window_values_list, positions)
+
+        # ==== reevaluation / overlapping small windows
+        positions, all_results, small_window_values_list = self.reevaluation(positions, all_results,
+                                                                             small_window_values_list)
+
+        reads_in_peaks = 0
+        main_list = []
+        bed_list = []
+        rlist_list = []
+        fasta_list = []
+        for r, a in enumerate(all_results):
+            reads_in_peaks += a[0][0]
+            precursor = [0, 0]
+            product = [a[0][1] + 1, a[0][2]]
+            bed = [a[0][1], a[0][2]]
+
+            if self.offset > 0:
+                precursor, product, bed = self.set_offset_coordinates(precursor, product, bed)
+
+            # ==== MAIN OUTPUT FILE
+            if self.from_bam and self.consensus != "":
+                consensus_seq = self.create_consensus(a, transcript_name, transcript_strand)
+
+                export_data = transcript_name + "\t" + transcript_name + "_" + str(product[0]) + "_" + str(
+                    product[1]) + "_" + transcript_strand + "\t" + "." + "\t" + str(product[0]) + "\t" + str(
+                    product[1]) + "\t" + transcript_strand + "\t" + str(a[0][0]) + "\t" + str(
+                    round(small_window_values_list[r], 2)) + "\t" + str(
+                    round(big_window_values_list[r], 2)) + "\t" + str(
+                    round((float(a[0][0]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round((float(small_window_values_list[r]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round((float(big_window_values_list[r]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round(enrich_list[r], 2)) + "\t" + consensus_seq + "\n"
+                fasta_line = ">" + transcript_name + "_" + str(product[0]) + "_" + str(
+                    product[1]) + "_" + transcript_strand + "\n" + consensus_seq + "\n"
+            elif self.reference != "":
+                consensus_seq = self.reference_dict[transcript_name][product[0] - 1:product[1]]
+                # print(product[0], product[1])
+                export_data = transcript_name + "\t" + transcript_name + "_" + str(product[0]) + "_" + str(
+                    product[1]) + "_" + transcript_strand + "\t" + "." + "\t" + str(product[0]) + "\t" + str(
+                    product[1]) + "\t" + transcript_strand + "\t" + str(a[0][0]) + "\t" + str(
+                    round(small_window_values_list[r], 2)) + "\t" + str(
+                    round(big_window_values_list[r], 2)) + "\t" + str(
+                    round((float(a[0][0]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round((float(small_window_values_list[r]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round((float(big_window_values_list[r]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round(enrich_list[r], 2)) + "\t" + consensus_seq + "\n"
+                fasta_line = ">" + transcript_name + "_" + str(product[0]) + "_" + str(
+                    product[1]) + "_" + transcript_strand + "\n" + consensus_seq + "\n"
+            else:
+                export_data = transcript_name + "\t" + transcript_name + "_" + str(product[0]) + "_" + str(
+                    product[1]) + "_" + transcript_strand + "\t" + "." + "\t" + str(product[0]) + "\t" + str(
+                    product[1]) + "\t" + transcript_strand + "\t" + str(a[0][0]) + "\t" + str(
+                    round(small_window_values_list[r], 2)) + "\t" + str(
+                    round(big_window_values_list[r], 2)) + "\t" + str(
+                    round((float(a[0][0]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round((float(small_window_values_list[r]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round((float(big_window_values_list[r]) * 100) / float(all_reads), 2)) + "\t" + str(
+                    round(enrich_list[r], 2)) + "\n"
+                fasta_line = ""
+
+            # ==== READ LIST OUTPUT FILE
+            rlist_output = transcript_name + "_" + str(product[0]) + "_" + str(
+                product[1]) + "_" + transcript_strand + " -> "
+            for read in a:
+                rlist_output += " ".join(read[3]) + " "
+                for s in read[3]:
+                    if '_x' in s:
+                        val = int(s.split("_x")[1])
+                    elif "-" in s:
+                        val = int(s.split("-")[1])
+                    else:
+                        val = 1
+                    self.parsed_reads_list[s] = val
+
+            rlist_output = rlist_output.strip() + "\n"
+
+            # ==== BED OUTPUT FILE
+            bed_file_output = transcript_name + "\t" + str(bed[0]) + "\t" + str(
+                bed[1]) + "\t" + transcript_name + "_" + str(product[0]) + "_" + str(
+                product[1]) + "_" + transcript_strand + "\t" + str(
+                round(small_window_values_list[r], 0)) + "\t" + transcript_strand + "\n"
+
+            main_list.append(export_data)
+            bed_list.append(bed_file_output)
+            rlist_list.append(rlist_output)
+            if (self.from_bam and self.consensus != "") or self.reference != "":
+                fasta_list.append(fasta_line)
+        # precursor_output = ""
+        if len(all_results) > 0:
+            precursor_output = transcript_name + "\t.\t.\t.\t" + transcript_strand + "\t" + str(
+                len(all_results)) + "\t" + str(round(sum(small_window_values_list), 2)) + "\t" + str(
+                reads_in_peaks) + "\t" + str(
+                round((float(reads_in_peaks) * 100) / float(sum(small_window_values_list)), 2)) + "\n"
+
+            L.acquire()
+            self.precursors_handler.write(precursor_output)
+            for m in range(0, len(main_list)):
+                self.main_handler.write(main_list[m])
+                self.list_handler.write(rlist_list[m])
+                self.bed_handler.write(bed_list[m])
+                if (self.from_bam and self.consensus != "") or self.reference != "":
+                    self.fasta_handler.write(fasta_list[m])
+            L.release()
+
+
+if __name__ == '__main__':
+
+    random_string = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(10))
+
+    parser = argparse.ArgumentParser('missRNA')
+    parser.add_argument('-i', '--input', type=str, help='Input file in BED|BAM|SAM format.', required=True,
+                        dest='input')
+    parser.add_argument('-o', '--output', type=str, help='Output files prefix.', required=False,
+                        default="missRNA_" + random_string, dest='output')
+    #parser.add_argument('-g', '--genomic', action="store_true", help='Genomic data analysis.', dest='genomic')
+    parser.add_argument('-r', '--reference', type=str, help='Reference sequences if FASTA format for consensus \
+                        sequence generation.', required=False,
+                        default="", dest='reference')
+    parser.add_argument('-c', '--collapsed_reads', action="store_true", help='Collapsed reads.', dest='collapsed')
+    parser.add_argument('-w', '--window', type=str, help='Window sizes. The small window determines the expression of \
+                        the product and the large window has its background. Default: 1-2."', required=False,
+                        default="1-2", dest='small_big')
+    parser.add_argument('-m', '--minimum', type=int, help='Minimal number of reads in product.', required=False,
+                        default=10, dest='minimum')
+    parser.add_argument('-e', '--enrichment', type=float,
+                        help="Enrichment percentage. Ratio of product's expression level to the background level.",
+                        required=False, default=40.0, dest='enrichment')
+    parser.add_argument('-f', '--offset', type=int, help='Offset when mapping.', required=False, default=0,
+                        dest='offset')
+    parser.add_argument('-s', '--strand_specific', type=int, help='Strand specific analysis (eg. -1 for minus strand, \
+                        0 for both strands, 1 for plus strand).', required=False, default=0, dest='strand')
+    parser.add_argument('-fo', '--forbid_overlapping', action="store_true", help='Forbid small window overlapping.',
+                        dest='overlapping')
+    parser.add_argument('-wg', '--weight', type=float, help='Distance weight when determining expression.',
+                        required=False, default=1.0, dest='weight')
+    parser.add_argument('-ec', '--experimental_consensus', action="store_true", help='Calculate sequence consensus \
+                            based on BAM/SAM file.', dest='consensus')
+    parser.add_argument('-t', '--threads', type=int, help='Number of threads. Default: 1', required=False, default=1,
+                        dest='threads')
+
+    args = parser.parse_args()
+
+    # ==== check input file format
+    issam = False
+    isbam = False
+    isbed = False
+    if '.bed' in args.input:
+        isbed = True
+    elif '.bam' in args.input:
+        isbam = True
+    elif '.sam' in args.input:
+        issam = True
+
+    # ==== offset cannot be used in genomic option
+#    if args.genomic and args.offset > 0:
+#        sys.stderr.write("ERROR: the offset parameter can be used only with transcriptomic mode.\n")
+#        sys.exit()
+
+    # ==== reference file is required with BAM input
+    # if args.reference and not isbam and not issam:
+    #    sys.stderr.write("ERROR: Generating consensus requires as an input file SAM or BAM format file.\n")
+    #    sys.exit()
+
+    if args.consensus and not isbam and not issam and not args.reference:
+        sys.stderr.write("ERROR: Generating consensus requires as an input file SAM or BAM format file.\n")
+        sys.exit()
+
+    if args.reference:
+        consensus = True
+    else:
+        consensus = False
+
+    # ==== strand specification
+    strand_sign = '+-'
+    if args.strand == -1:
+        strand_sign = '-'
+    elif args.strand == 0:
+        strand_sign = '+-'
+    elif args.strand == 1:
+        strand_sign = '+'
+
+    # ==== parse widows values
+    if len(args.small_big.split("-")) == 2:
+        try:
+            small_window = int(args.small_big.split("-")[0])
+            big_window = int(args.small_big.split("-")[1])
+        except ValueError:
+            sys.stderr.write("ERROR: Window size value must be integer.\n")
+            sys.exit()
+        if not small_window < big_window:
+            sys.stderr.write("ERROR: second value must be bigger than first one.\n")
+            sys.exit()
+    else:
+        sys.stderr.write("ERROR: please provide windows sizes in format int-int (form 0 to 9). Example: 1-2\n")
+        sys.exit()
+
+    # ==== names for output files
+    output_filename_list = args.output + ".rlist"
+    output_filename_bed = args.output + ".bed"
+    output_filename_precursors = args.output + ".precursors"
+    if args.reference:
+        output_filename_fasta = args.output + ".fasta"
+
+    # ==== add data to class
+    m_out = open(args.output, 'w')
+    list_out = open(output_filename_list, 'w')
+    bed_out = open(output_filename_bed, 'w')
+    precursors_out = open(output_filename_precursors, 'w')
+    if args.reference:
+        fasta_out = open(output_filename_fasta, 'w')
+        mr = MissRNA(m_out, list_out, bed_out, precursors_out, args.reference, small_window, big_window, args.minimum,
+                 args.enrichment, args.offset, args.overlapping, random_string, "", args.weight, args.consensus, fasta_out)
+    else:
+        mr = MissRNA(m_out, list_out, bed_out, precursors_out, args.reference, small_window, big_window, args.minimum,
+                     args.enrichment, args.offset, args.overlapping, random_string, "", args.weight, args.consensus, "")
+
+    # ==== parse SAM | BAM | BED input file
+    start = time.time()
+    new_bed = {}
+    if issam:
+        try:
+            sam_file = pysam.AlignmentFile(args.input, check_sq=False, check_header=False)
+        except FileNotFoundError:
+            sys.stderr.write("ERROR: could not open alignment file '" + args.input + "': No such file or directory.\n")
+            sys.exit()
+        if args.collapsed:
+            new_bed = mr.parse_sam_bam_transcripts(sam_file, strand_sign, consensus)
+        else:
+            new_bed = mr.collapse_bam_transcripts(sam_file, strand_sign, consensus)
+            args.collapsed = True
+        mr.consensus = args.input
+        sam_file.close()
+    elif isbam:
+        try:
+            bam_file = pysam.AlignmentFile(args.input, "rb")
+        except FileNotFoundError:
+            sys.stderr.write("ERROR: could not open alignment file'" + args.input + "': No such file or directory.\n")
+            sys.exit()
+        if args.collapsed:
+            new_bed = mr.parse_sam_bam_transcripts(bam_file, strand_sign, consensus)
+        else:
+            new_bed = mr.collapse_bam_transcripts(bam_file, strand_sign, consensus)
+            args.collapsed = True
+        mr.consensus = args.input
+        bam_file.close()
+    elif isbed:
+        if args.collapsed:
+            new_bed = mr.parse_bed_transcriptom_collapsed(args.input, strand_sign)
+        else:
+            new_bed = mr.parse_bed_transcriptom_uncollapsed(args.input, strand_sign)
+
+    # ==== run parsing file and multithreading
+
+#    if args.genomic and args.collapsed:
+        # ==== genomic collapsed
+#        pass
+#    elif args.genomic:
+        # ==== genomic uncollapsed
+#        pass
+#    else:
+        # ==== transcriptomic collapsed/uncollapsed
+    new_bed_keys = list(new_bed.keys())
+    cnt = len(new_bed)
+    for nb in new_bed:
+           # if nb[0] == "ENST00000618633":
+           # print(cnt)
+        x = threading.activeCount()
+        while x > args.threads:
+            x = threading.activeCount()              
+            time.sleep(1)
+        new_t = threading.Thread(target=mr.transcriptomic_data, args=(new_bed[nb], nb[0], nb[1],))
+        new_t.start()
+        cnt -= 1
+    x = threading.activeCount()
+    while x > 1:
+        x = threading.activeCount()
+        time.sleep(1)
+
+    # ==== statistics
+    count = sum([mr.parsed_reads_list[rd] for rd in mr.parsed_reads_list])
+    print("Number of all reads in analysis: ", mr.nonredundand)
+    print("Number of reads within identified stable RNAs: ", count)
+    print("Percent of reads within identified stable RNAs: ",
+          str(round((count * 100) / mr.nonredundand, 2)) + "%")
+
+    #stop = time.time()
+    #print("Time: ", round(stop - start, 2), " sek")
