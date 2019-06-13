@@ -365,7 +365,7 @@ class MissRNA:
                 distances = [abs(products[p][0][1] - key[0]) + abs(products[p][0][2] - key[1]) for p in
                              positions[key][3:]]
                 distance_factors = [self.distance_weight * (1 - (dist / sum(distances))) for dist in distances]
-                dist_peak_factors = [peaks[d] * dist for d, dist in enumerate(distance_factors)]
+                dist_peak_factors = [(peaks[d]/sum(peaks)) * dist for d, dist in enumerate(distance_factors)]
                 final_percentage = [(dist * 100) / sum(dist_peak_factors) for dist in dist_peak_factors]
                 for i, o in enumerate(positions[key][3:]):
                     for p in products[o]:
