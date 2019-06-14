@@ -40,7 +40,7 @@ On Debian-based systems (e.g. Ubuntu) you can simply follow the instructions:
 
 The main file of missRNA program is *missRNA*. To run missRNA on provided example file with default parameters and using your system's default python3 interpreter, enter the *sample* directory and type:
 
-```../missRNA -i RNASTRAND.fasta```
+```../missRNA -i sample.bam```
 	 
 To show full list of available  options type:
 
@@ -170,7 +170,7 @@ Rlist output file contains list of read names which correspond to exact position
 
 The file structure is as follows (coordinates are in 1-based format and match those in the main file):
 1. stable RNA ID (same as in main output file, e.g. *ENST00000362645_1_23_+*)
-2. *->* sign which separates product_name and read list
+2. *->* sign which separates stable RNA ID and read list
 3. list of reads names, that correspond to given RNA, separated with single whitespace.
 
 Sample rlist output file *sample_result.rlist* is provided in "sample" folder.
@@ -247,7 +247,7 @@ Example:
 
 #### Command used to generate sample output files
 
-```../missRNA -i sample.bam -o sample_result -r Homo_sapiens.GRCh38.transcriptome.primary_assembly.fa -c```
+```../missRNA -i sample.bam -o sample_result -r reference.fa -c```
 
 
 ### Contribute
