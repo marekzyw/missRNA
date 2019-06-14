@@ -1,5 +1,7 @@
 # missRNA - Method for Identification of Small Stable RNAs
 
+missRNA is a tool for identification of small stable RNAs which are either independent transcripts or are excised from larger precursors. The process relay on finding positions of read mapping (both start and end simultanously) which are "local maxima" potentially corresponding to specific RNA. Next, reads differing in mapping positions by user-defined range ("small window") are counted and included in RNA expression level calculation. The stability of identified small RNAs is verified by calculation of ratio between number of reads corresponding to small RNA expression and number of reads within a larger, user-defined background window. 
+
 ## Installation
 
 missRNA requires Python 3.5 or higher and following Python3 library:
